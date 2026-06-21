@@ -5,3 +5,4 @@ pillow
 tensorflow
 matplotlib
 streamlit-webrtc
+librosa
