@@ -3,6 +3,8 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+import threading
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 from tensorflow.keras.models import load_model
 
 # 1. Load Model with caching
@@ -23,70 +25,51 @@ face_cascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
-st.title("🎥 Live Webcam Emotion Analytics")
-st.write("Click 'Start Webcam' to capture live emotions. Click 'Stop & Generate Graphs' to see your session analytics.")
+# --- LOCK AND SHARED MEMORY FOR ASYNC THREADS ---
+# We use a thread-safe dictionary to pass data out of WebRTC into our graphing mechanism
+class SessionData:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.timestamps = []
+        self.dominant_emotions = []
+        self.dominant_confidences = []
+        self.emotion_trends = {emotion_labels[i]: [] for i in range(7)}
 
-# Initialize session state variables to hold data when the loop stops
-if "timestamps" not in st.session_state:
-    st.session_state.timestamps = []
-if "dominant_emotions" not in st.session_state:
-    st.session_state.dominant_emotions = []
-if "dominant_confidences" not in st.session_state:
-    st.session_state.dominant_confidences = []
-if "emotion_trends" not in st.session_state:
-    st.session_state.emotion_trends = {emotion_labels[i]: [] for i in range(7)}
+# Initialize or retrieve session state data safely
+if "analytics_data" not in st.session_state:
+    st.session_state.analytics_data = SessionData()
 
-# Control Sliders & Buttons
+st.title("🎥 WebRTC Live Emotion Analytics")
+st.write("Start the WebRTC stream. When you are done, click 'Stop' in the media player, then press the render button below.")
+
 sample_interval = st.slider("Analysis Interval (Seconds)", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
 
-col1, col2 = st.columns(2)
-with col1:
-    start_button = st.button("🟢 Start Webcam", use_container_width=True)
-with col2:
-    stop_button = st.button("🔴 Stop & Generate Graphs", use_container_width=True)
+# --- WEBRTC VIDEO PROCESSOR CLASS ---
+class EmotionProcessor(VideoProcessorBase):
+    def __init__(self, shared_data, interval):
+        self.shared_data = shared_data
+        self.interval = interval
+        self.start_time = time.time()
+        self.last_analysis_time = 0
 
-# Create layout placeholders for the live elements
-frame_placeholder = st.empty()
-metrics_placeholder = st.empty()
-
-# --- WEBCAM LOOP ---
-if start_button:
-    # Reset history for a fresh session
-    st.session_state.timestamps = []
-    st.session_state.dominant_emotions = []
-    st.session_state.dominant_confidences = []
-    st.session_state.emotion_trends = {emotion_labels[i]: [] for i in range(7)}
-    
-    # Open default webcam (0)
-    cap = cv2.VideoCapture(0)
-    
-    start_time = time.time()
-    last_analysis_time = 0
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            st.error("Webcam failed to start.")
-            break
-
-        # Mirror the frame for a more natural webcam feel
-        frame = cv2.flip(frame, 1)
+    def recv(self, frame):
+        # Convert WebRTC frame to OpenCV BGR format
+        img = frame.to_ndarray(format="bgr24")
+        img = cv2.flip(img, 1) # Mirror effect
         
-        current_time = time.time() - start_time
-        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # Detect Face
+        current_time = time.time() - self.start_time
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        image_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         faces = face_cascade.detectMultiScale(gray, 1.3, 5)
-        
-        # Check if it's time to analyze based on your interval slider
-        if current_time - last_analysis_time >= sample_interval:
-            last_analysis_time = current_time
+
+        # Thread-safe writing interval data
+        if current_time - self.last_analysis_time >= self.interval:
+            self.last_analysis_time = current_time
             
-            # Store timestamp
-            timestamp_rounded = round(current_time, 2)
-            st.session_state.timestamps.append(timestamp_rounded)
-            
+            dominant_em = "No Face"
+            conf = 0.0
+            preds = [0.0] * 7
+
             if len(faces) > 0:
                 x, y, w, h = faces[0]
                 face = image_rgb[y:y+h, x:x+w]
@@ -99,55 +82,47 @@ if start_button:
                 predicted_class = np.argmax(prediction)
                 dominant_em = emotion_labels[predicted_class]
                 conf = float(prediction[predicted_class])
-                
-                # Store records into session state
-                st.session_state.dominant_emotions.append(dominant_em)
-                st.session_state.dominant_confidences.append(conf)
-                for i in range(7):
-                    st.session_state.emotion_trends[emotion_labels[i]].append(float(prediction[i]))
-            else:
-                st.session_state.dominant_emotions.append("No Face")
-                st.session_state.dominant_confidences.append(0.0)
-                for i in range(7):
-                    st.session_state.emotion_trends[emotion_labels[i]].append(0.0)
+                preds = [float(p) for p in prediction]
 
-        # Draw box on screen dynamically (even between calculation frames)
+            # Securely push data to the main thread
+            with self.shared_data.lock:
+                self.shared_data.timestamps.append(round(current_time, 2))
+                self.shared_data.dominant_emotions.append(dominant_em)
+                self.shared_data.dominant_confidences.append(conf)
+                for i in range(7):
+                    self.shared_data.emotion_trends[emotion_labels[i]].append(preds[i])
+
+        # Draw box dynamically on the screen output
         for (x, y, w, h) in faces:
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            if len(st.session_state.dominant_emotions) > 0:
-                # Label the box with current live dominant emotion
-                label = f"{st.session_state.dominant_emotions[-1]} ({st.session_state.dominant_confidences[-1]*100:.0f}%)"
-                cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            # Fetch last recorded emotion to label onto the video stream box
+            with self.shared_data.lock:
+                if len(self.shared_data.dominant_emotions) > 0:
+                    label = f"{self.shared_data.dominant_emotions[-1]} ({self.shared_data.dominant_confidences[-1]*100:.0f}%)"
+                    cv2.putText(img, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        # 1. Update live camera feed frame placeholder
-        frame_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
-        
-        # 2. Update live probability readout percentages underneath camera
-        if len(st.session_state.dominant_emotions) > 0:
-            with metrics_placeholder.container():
-                st.write(f"**Current Target Emotion:** {st.session_state.dominant_emotions[-1].upper()}")
-                # Display a quick breakdown table or progress meters
-                cols = st.columns(7)
-                for idx, em_name in enumerate(emotion_labels.values()):
-                    val = st.session_state.emotion_trends[em_name][-1]
-                    cols[idx].metric(label=em_name, value=f"{val*100:.1f}%")
+        return frame.from_ndarray(img, format="bgr24")
 
-        # Allow Streamlit to yield processing to avoid browser hanging
-        time.sleep(0.01)
+# --- START WEBRTC STREAMER ---
+ctx = webrtc_streamer(
+    key="emotion-analysis",
+    mode=WebRtcMode.SENDRECV,
+    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}, # Required for cloud hosting
+    video_processor_factory=lambda: EmotionProcessor(st.session_state.analytics_data, sample_interval),
+    media_stream_constraints={"video": True, "audio": False},
+)
 
-    cap.release()
-
-# --- PLOT FINAL SUMMARY HISTORIC CHARTS ---
-# This executes either when the webcam breaks or if the session state contains data after stopping
-if stop_button or (not start_button and len(st.session_state.timestamps) > 0):
-    st.success("Webcam Session Stopped! Compiling graphs...")
+# --- PLOT THE GRAPH AFTER DATA ACCUMULATION ---
+st.write("---")
+if st.button("📊 Render Session Analytics Graphs", use_container_width=True):
+    data = st.session_state.analytics_data
     
-    # Retrieve saved session history data
-    ts = st.session_state.timestamps
-    dom_em = st.session_state.dominant_emotions
-    dom_conf = st.session_state.dominant_confidences
-    trends = st.session_state.emotion_trends
-    
+    with data.lock:
+        ts = list(data.timestamps)
+        dom_em = list(data.dominant_emotions)
+        dom_conf = list(data.dominant_confidences)
+        trends = {k: list(v) for k, v in data.emotion_trends.items()}
+
     if len(ts) > 0:
         st.subheader("📊 Session Summary Analytics")
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
@@ -176,4 +151,4 @@ if stop_button or (not start_button and len(st.session_state.timestamps) > 0):
         plt.tight_layout()
         st.pyplot(fig)
     else:
-        st.warning("No data tracked yet. Press 'Start Webcam' first.")
+        st.warning("No data recorded yet. Please run your camera feed first.")
