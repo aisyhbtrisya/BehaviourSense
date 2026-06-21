@@ -5,7 +5,7 @@ from tensorflow.keras.models import load_model
 
 @st.cache_resource
 def load_ser_model():
-    return load_model("individual_models/models/CNN_BiLSTM_RAVDESS.keras", safe_mode=False)
+    return load_model("individual_models/models/CNN_BiLSTM_RAVDESS.keras", compile=False, safe_mode=False)
 
 model = load_ser_model()
 
