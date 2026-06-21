@@ -6,4 +6,4 @@ tensorflow
 matplotlib
 streamlit-webrtc
 librosa
-keras
+keras==2.15.0
