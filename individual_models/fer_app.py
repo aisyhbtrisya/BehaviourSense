@@ -7,7 +7,7 @@ from tensorflow.keras.models import load_model
 #Load Model
 @st.cache_resource
 def load_fer_model():
-    return load_model("./models/MobileNet_Attention_RAFDB.h5", compile=False)
+    return load_model("individual_models/models/MobileNet_Attention_RAFDB.h5", compile=False)
 
 model = load_fer_model()
 
