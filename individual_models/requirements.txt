@@ -5,5 +5,5 @@ pillow
 matplotlib
 streamlit-webrtc
 librosa
-tensorflow>=2.16
-tf_keras
+tensorflow==2.15.0
+keras==2.15.0
