@@ -2,7 +2,7 @@ import streamlit as st
 import numpy as np
 import librosa
 import keras
-from tensorflow.keras.models import load_model
+from tf_keras.models import load_model
 
 @st.cache_resource
 

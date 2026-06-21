@@ -2,8 +2,8 @@ streamlit
 opencv-python-headless
 numpy
 pillow
-tensorflow
 matplotlib
 streamlit-webrtc
 librosa
-keras
+tensorflow>=2.16
+tf_keras
