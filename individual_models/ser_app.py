@@ -1,26 +1,11 @@
 import streamlit as st
 import numpy as np
 import librosa
-import keras
-from tf_keras.models import load_model
+from tensorflow.keras.models import load_model
 
 @st.cache_resource
-
 def load_ser_model():
-    # Force Keras to allow unsafe deserialization for the Lambda layer
-    keras.config.enable_unsafe_deserialization()
-    
-    # Define a blank custom object mapping to assist the Lambda loader if needed
-    custom_objects = {
-        "Lambda": keras.layers.Lambda
-    }
-    
-    return load_model(
-        "individual_models/models/CNN_BiLSTM_RAVDESS.keras", 
-        custom_objects=custom_objects,
-        compile=False, 
-        safe_mode=False
-    )
+    return load_model("models/CNN_BiLSTM_RAVDESS.keras", compile=False)
 
 model = load_ser_model()
 

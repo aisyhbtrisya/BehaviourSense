@@ -6,4 +6,3 @@ tensorflow
 matplotlib
 streamlit-webrtc
 librosa
-tf_keras
