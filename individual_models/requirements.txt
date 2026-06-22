@@ -6,4 +6,4 @@ tensorflow
 matplotlib
 streamlit-webrtc
 librosa
-moviepy
+moviepy==1.0.3
