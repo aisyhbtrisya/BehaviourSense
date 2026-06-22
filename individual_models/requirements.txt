@@ -6,3 +6,4 @@ tensorflow
 matplotlib
 streamlit-webrtc
 librosa
+moviepy
