@@ -1,10 +1,14 @@
 import os
 import tempfile
 import librosa
+import matplotlib.pyplot as plt
 import numpy as np
 from moviepy.editor import AudioFileClip
 import streamlit as st
 from tensorflow.keras.models import load_model
+
+# Adjust layout to wide mode so the two charts sit nicely side-by-side
+st.set_page_config(layout="wide")
 
 
 @st.cache_resource
@@ -14,6 +18,7 @@ def load_ser_model():
 
 model = load_ser_model()
 
+# Match the labels from your image
 emotion_labels = {
     0: "angry",
     1: "disgust",
@@ -21,11 +26,11 @@ emotion_labels = {
     3: "happy",
     4: "neutral",
     5: "sad",
+    6: "surprise",  # Added surprise if your model supports it, adjust mapping if needed
 }
 
 st.title("SER - Speech Emotion Recognition")
 
-# 1. Expanded file uploader to accept both Audio and Video formats
 uploaded_file = st.file_uploader(
     "Upload an audio or video file",
     type=["wav", "mp3", "m4a", "mp4", "avi", "mov", "mkv"],
@@ -39,8 +44,6 @@ def extract_ser_features(audio_window, sr):
     mel_db = librosa.power_to_db(mel)
 
     features = np.vstack([mfcc, chroma, mel_db])
-
-    # Make sure shape becomes 80 x 174
     target_shape = (80, 174)
 
     if features.shape[1] < target_shape[1]:
@@ -51,12 +54,10 @@ def extract_ser_features(audio_window, sr):
 
     features = np.expand_dims(features, axis=-1)
     features = np.expand_dims(features, axis=0)
-
     return features
 
 
 if uploaded_file is not None:
-    # Display the uploaded media asset
     file_extension = uploaded_file.name.split(".")[-1].lower()
     if file_extension in ["mp4", "avi", "mov", "mkv"]:
         st.video(uploaded_file)
@@ -64,102 +65,130 @@ if uploaded_file is not None:
         st.audio(uploaded_file)
 
     with st.spinner("Processing media file and extracting audio..."):
-        # Save the uploaded file to a temporary location
         with tempfile.NamedTemporaryFile(
             delete=False, suffix=f".{file_extension}"
         ) as temp_input:
             temp_input.write(uploaded_file.read())
             temp_input_path = temp_input.name
 
-        # Create a temporary path for the converted WAV file
         temp_wav_path = tempfile.mktemp(suffix=".wav")
 
         try:
-            # Extract/Convert audio using moviepy (handles video, m4a, etc.)
             audio_clip = AudioFileClip(temp_input_path)
             audio_clip.write_audiofile(
                 temp_wav_path, fps=22050, nbytes=2, codec="pcm_s16le", logger=None
             )
             audio_clip.close()
-
-            # Load the guaranteed clean WAV file into librosa
             audio, sr = librosa.load(temp_wav_path, sr=22050)
-
         finally:
-            # Clean up the temporary files from the server disk
             if os.path.exists(temp_input_path):
                 os.remove(temp_input_path)
             if os.path.exists(temp_wav_path):
                 os.remove(temp_wav_path)
 
-    # 2. Windowing parameters (4s window, 2s overlap)
+    # Windowing parameters
     window_size = 4
     overlap = 2
     step_size = window_size - overlap
-
     window_samples = window_size * sr
     step_samples = step_size * sr
 
-    results = []
+    # Arrays to store timeline data for plotting
+    time_stamps = []
+    dominant_emotions = []
+    confidence_scores = []
+    all_probabilities = []
 
-    # Fallback: If audio is too short, process the whole clip as 1 window
-    if len(audio) < window_samples:
-        features = extract_ser_features(audio, sr)
+    for start in range(0, len(audio) - window_samples + 1, step_samples):
+        end = start + window_samples
+        audio_window = audio[start:end]
+
+        features = extract_ser_features(audio_window, sr)
         prediction = model.predict(features)
-        results.append(
-            {
-                "start_time": 0.0,
-                "end_time": len(audio) / sr,
-                "emotion": emotion_labels[np.argmax(prediction)],
-                "confidence": np.max(prediction),
-                "probabilities": prediction[0],
-            }
-        )
+
+        predicted_class = np.argmax(prediction)
+        confidence = np.max(prediction)
+
+        # Center timestamp of the window for accurate graphing
+        mid_time = (start + (window_samples / 2)) / sr
+
+        time_stamps.append(mid_time)
+        dominant_emotions.append(emotion_labels[predicted_class])
+        confidence_scores.append(confidence)
+        all_probabilities.append(prediction[0])
+
+    # Check if we generated data points
+    if len(time_stamps) == 0:
+        st.error("Audio file is too short to parse into windows.")
     else:
-        # Standard rolling window processing
-        for start in range(0, len(audio) - window_samples + 1, step_samples):
-            end = start + window_samples
-            audio_window = audio[start:end]
+        st.write("---")
+        st.header("📊 Session Summary Analytics")
 
-            features = extract_ser_features(audio_window, sr)
+        # Create two columns to match your layout perfectly
+        col1, col2 = st.columns(2)
 
-            prediction = model.predict(features)
-            predicted_class = np.argmax(prediction)
-            confidence = np.max(prediction)
-
-            emotion = emotion_labels[predicted_class]
-
-            results.append(
-                {
-                    "start_time": start / sr,
-                    "end_time": end / sr,
-                    "emotion": emotion,
-                    "confidence": confidence,
-                    "probabilities": prediction[0],
-                }
+        with col1:
+            # Chart 1: Dominant Emotion Trend Over Session
+            fig1, ax1 = plt.subplots(figsize=(6, 4))
+            ax1.plot(
+                time_stamps,
+                confidence_scores,
+                color="purple",
+                marker="o",
+                markersize=4,
+                linewidth=2,
             )
 
-    # --- Display Results ---
-    st.subheader("SER Result by Audio Window")
+            # Annotate text labels directly onto points
+            for t, conf, emo in zip(
+                time_stamps, confidence_scores, dominant_emotions
+            ):
+                ax1.text(
+                    t,
+                    conf + 0.02,
+                    emo,
+                    fontsize=8,
+                    ha="center",
+                    va="bottom",
+                    alpha=0.8,
+                )
 
-    for i, result in enumerate(results):
-        st.write(
-            f"**Window {i+1}: "
-            f"{result['start_time']:.1f}s - {result['end_time']:.1f}s**"
-        )
-        st.write(f"Predicted Emotion: **{result['emotion']}**")
-        st.write(f"Confidence: **{result['confidence']:.2f}**")
+            ax1.set_title("Dominant Emotion Trend Over Session", fontsize=10)
+            ax1.set_xlabel("Time (Seconds)", fontsize=9)
+            ax1.set_ylabel("Confidence Score", fontsize=9)
+            ax1.set_ylim(-0.05, 1.1)
+            ax1.grid(True, linestyle="--", alpha=0.5)
+            st.pyplot(fig1)
 
-        with st.expander("View emotion probabilities"):
-            for j, prob in enumerate(result["probabilities"]):
-                st.write(f"{emotion_labels[j]}: {prob:.4f}")
+        with col2:
+            # Chart 2: All Emotion Probabilities Breakdown
+            fig2, ax2 = plt.subplots(figsize=(6, 4))
+            all_probabilities = np.array(all_probabilities)
 
-    # Overall SER result
-    avg_probs = np.mean([r["probabilities"] for r in results], axis=0)
-    final_class = np.argmax(avg_probs)
-    final_emotion = emotion_labels[final_class]
-    final_confidence = np.max(avg_probs)
+            # Draw a line plot for each individual emotion track
+            for idx, label in emotion_labels.items():
+                # Verify that the index exists in the model's output slice
+                if idx < all_probabilities.shape[1]:
+                    ax2.plot(
+                        time_stamps,
+                        all_probabilities[:, idx],
+                        label=label,
+                        linewidth=1.5,
+                    )
 
-    st.subheader("Overall SER Result")
-    st.write(f"**Final Emotion:** {final_emotion}")
-    st.write(f"**Final Confidence:** {final_confidence:.2f}")
+            ax2.set_title("All Emotion Probabilities Breakdown", fontsize=10)
+            ax2.set_xlabel("Time (Seconds)", fontsize=9)
+            ax2.set_ylabel("Probability", fontsize=9)
+            ax2.set_ylim(-0.05, 1.1)
+            ax2.grid(True, linestyle="--", alpha=0.5)
+            ax2.legend(loc="upper right", fontsize=8)
+            st.pyplot(fig2)
+
+        # Overall summary metric blocks below the charts
+        avg_probs = np.mean(all_probabilities, axis=0)
+        final_class = np.argmax(avg_probs)
+
+        st.write("---")
+        m1, m2 = st.columns(2)
+        m1.metric("Final Predicted Emotion", emotion_labels[final_class].upper())
+        m2.metric("Final Session Confidence", f"{np.max(avg_probs):.2f}")
