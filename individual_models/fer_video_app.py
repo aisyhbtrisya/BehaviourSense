@@ -4,21 +4,33 @@ import numpy as np
 import matplotlib.pyplot as plt
 import tempfile
 from tensorflow.keras.models import load_model
+from tensorflow.keras import layers
+import tensorflow as tf
 
-# 1. Load Model with caching so it stays fast
+# ====================================================================
+# 1. DEFINE CUSTOM LAYER & LOAD MODEL
+# ====================================================================
+@tf.keras.utils.register_keras_serializable(package="Custom")
+class SelfAttention(layers.Layer):
+    def call(self, x):
+        q = k = v = x
+        dk = tf.cast(tf.shape(k)[-1], tf.float32)
+        attention = tf.matmul(q, k, transpose_b=True)
+        attention = attention / tf.math.sqrt(dk)
+        attention = tf.nn.softmax(attention)
+        return tf.matmul(attention, v)
+
 @st.cache_resource
 def load_fer_model():
-    return load_model("individual_models/models/MobileNet_Attention_RAFDB.h5", compile=False)
+    return load_model("individual_models/models/patt_lite_rafdb.keras", custom_objects={"SelfAttention": SelfAttention}, compile=False)
 
 model = load_fer_model()
 
-# RAF-DB labels
 emotion_labels = {
     0: "surprise", 1: "fear", 2: "disgust", 3: "happy", 
     4: "sad", 5: "angry", 6: "neutral"
 }
 
-# Initialize Face Detector
 face_cascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
@@ -26,34 +38,26 @@ face_cascade = cv2.CascadeClassifier(
 st.title("🎬 Video Emotion Analytics")
 st.write("Upload a video file to analyze face emotions over time and plot analytics graphs.")
 
-# Video Uploader Widget
 uploaded_video = st.file_uploader("Upload a video", type=["mp4", "avi", "mov", "mkv"])
 
 if uploaded_video is not None:
-    # Streamlit passes a bytes object, OpenCV needs a file path. 
-    # We save the uploaded bytes to a temporary local file.
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tfile:
         tfile.write(uploaded_video.read())
         video_path = tfile.name
 
-    # Configuration Slider
     sample_interval = st.slider("Sampling Interval (Seconds)", min_value=0.1, max_value=3.0, value=0.5, step=0.1)
 
     if st.button("🚀 Start Video Analysis"):
-        # Setup video capture
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_skip_interval = max(1, int(fps * sample_interval))
         
-        # Lists for data collection
         timestamps = []
         dominant_emotions = []
         dominant_confidences = []
         emotion_trends = {emotion_labels[i]: [] for i in range(7)}
         
         frame_count = 0
-        
-        # Progress UI
         progress_bar = st.progress(0)
         status_text = st.empty()
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -67,7 +71,6 @@ if uploaded_video is not None:
                 timestamp = round(frame_count / fps, 2)
                 timestamps.append(timestamp)
                 
-                # Update progress bar text
                 status_text.text(f"Processing time: {timestamp}s...")
                 if total_frames > 0:
                     progress_bar.progress(min(frame_count / total_frames, 1.0))
@@ -105,13 +108,11 @@ if uploaded_video is not None:
 
         # ------------------ PLOTTING THE GRAPHS IN STREAMLIT ------------------
         st.subheader("📊 Analytics Results")
-        
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
         
-        # Graph 1: Dominant Emotion Tracking Line
         ax1.plot(timestamps, dominant_confidences, color='purple', linewidth=2, marker='o', markersize=4)
         for i, txt in enumerate(dominant_emotions):
-            if txt != "No Face" and i % 2 == 0:  # Annotate text labels to every other plot point
+            if txt != "No Face" and i % 2 == 0:
                 ax1.annotate(txt, (timestamps[i], dominant_confidences[i]), textcoords="offset points", xytext=(0,5), ha='center', fontsize=8)
         ax1.set_title("Dominant Emotion Trend")
         ax1.set_xlabel("Time (Seconds)")
@@ -119,7 +120,6 @@ if uploaded_video is not None:
         ax1.grid(True, linestyle='--', alpha=0.6)
         ax1.set_ylim(-0.05, 1.05)
 
-        # Graph 2: Multiline breakdown of every emotion probability
         for emotion, values in emotion_trends.items():
             ax2.plot(timestamps, values, label=emotion, linewidth=1.5)
         ax2.set_title("All Emotion Probabilities Breakdown")
@@ -130,6 +130,4 @@ if uploaded_video is not None:
         ax2.set_ylim(-0.05, 1.05)
         
         plt.tight_layout()
-        
-        # Display the matplotlib plot directly inside the web page
         st.pyplot(fig)
