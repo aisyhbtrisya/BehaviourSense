@@ -1,82 +1,109 @@
 import os
+import tempfile
 import librosa
+import matplotlib.pyplot as plt
 import numpy as np
 import pickle
 import streamlit as st
+from moviepy.editor import AudioFileClip
 from tensorflow.keras.models import load_model
 
-# 1. Configuration matching the training notebook
-TARGET_SR = 22050
-DURATION = 2.5
-OFFSET = 0.6
-FRAME_LENGTH = 2048
-HOP_LENGTH = 512
-ALPHA = 0.035
-BETA = 0.7
+st.set_page_config(layout="wide")
 
-# 2. Paths - Update these to match your actual file locations
-MODEL_PATH = "path_to_your/SER_model.keras"  # Update this
-SCALER_PATH = "path_to_your/scaler.pkl"     # Update this
-
-# 3. Load model and scaler
+# --- 1. Resource Loading ---
 @st.cache_resource
 def load_resources():
-    model = load_model(MODEL_PATH, compile=False)
-    with open(SCALER_PATH, 'rb') as f:
-        scaler = pickle.load(f)
-    return model, scaler
-
-model, scaler = load_resources()
-
-# Emotion labels based on CREMA-D mapping
-emotion_labels = {
-    0: "Angry",
-    1: "Disgust",
-    2: "Fear",
-    3: "Happy",
-    4: "Neutral",
-    5: "Sad"
-}
-
-def extract_features_from_signal(y, sr):
-    zcr = np.squeeze(librosa.feature.zero_crossing_rate(y=y, frame_length=FRAME_LENGTH, hop_length=HOP_LENGTH))
-    rmse = np.squeeze(librosa.feature.rms(y=y, frame_length=FRAME_LENGTH, hop_length=HOP_LENGTH))
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_fft=FRAME_LENGTH, hop_length=HOP_LENGTH).flatten()
-    chroma = librosa.feature.chroma_stft(y=y, sr=sr, n_fft=FRAME_LENGTH, hop_length=HOP_LENGTH).flatten()
-    return np.concatenate((zcr, rmse, mfcc, chroma))
-
-def process_audio_file(file_path):
-    y, sr = librosa.load(file_path, sr=TARGET_SR, duration=DURATION, offset=OFFSET)
-    required_samples = int(TARGET_SR * DURATION)
-    if len(y) < required_samples:
-        y = np.pad(y, (0, required_samples - len(y)), mode='constant')
-
-    f_oa = extract_features_from_signal(y, sr)
-    f_na = extract_features_from_signal(y + ALPHA * np.random.normal(0, 1, len(y)), sr)
-    f_pa = extract_features_from_signal(librosa.effects.pitch_shift(y, sr=sr, n_steps=BETA), sr)
-    f_comb = extract_features_from_signal(librosa.effects.pitch_shift(y + ALPHA * np.random.normal(0, 1, len(y)), sr=sr, n_steps=BETA), sr)
+    # Paths updated to your models folder
+    model_path = "individual_models/models/SER_CNN_BiLSTM_CREMAD.keras"
+    scaler_path = "individual_models/models/scaler.pkl"
+    # Loading encoder just in case, though we use the dictionary for mapping
+    encoder_path = "individual_models/models/encoder.pkl"
     
-    return np.concatenate((f_oa, f_na, f_pa, f_comb))
+    model = load_model(model_path, compile=False)
+    with open(scaler_path, "rb") as f:
+        scaler = pickle.load(f)
+    with open(encoder_path, "rb") as f:
+        encoder = pickle.load(f)
+        
+    return model, scaler, encoder
+
+model, scaler, encoder = load_resources()
+
+# CREMA-D Labels
+emotion_labels = {
+    0: "Angry", 1: "Disgust", 2: "Fear", 
+    3: "Happy", 4: "Neutral", 5: "Sad"
+}
 
 st.title("SER - Speech Emotion Recognition (CREMA-D)")
 
-uploaded_file = st.file_uploader("Upload an audio file", type=["wav", "mp3"])
+# --- 2. Feature Extraction Pipeline (Matches Training) ---
+def extract_ser_features(y, sr):
+    ALPHA, BETA = 0.035, 0.7
+    FRAME_LENGTH, HOP_LENGTH = 2048, 512
+    
+    def get_features(signal):
+        zcr = np.squeeze(librosa.feature.zero_crossing_rate(y=signal, frame_length=FRAME_LENGTH, hop_length=HOP_LENGTH))
+        rmse = np.squeeze(librosa.feature.rms(y=signal, frame_length=FRAME_LENGTH, hop_length=HOP_LENGTH))
+        mfcc = librosa.feature.mfcc(y=signal, sr=sr, n_fft=FRAME_LENGTH, hop_length=HOP_LENGTH).flatten()
+        chroma = librosa.feature.chroma_stft(y=signal, sr=sr, n_fft=FRAME_LENGTH, hop_length=HOP_LENGTH).flatten()
+        return np.concatenate((zcr, rmse, mfcc, chroma))
+
+    f_oa = get_features(y)
+    f_na = get_features(y + ALPHA * np.random.normal(0, 1, len(y)))
+    f_pa = get_features(librosa.effects.pitch_shift(y, sr=sr, n_steps=BETA))
+    f_comb = get_features(librosa.effects.pitch_shift(y + ALPHA * np.random.normal(0, 1, len(y)), sr=sr, n_steps=BETA))
+    
+    return np.nan_to_num(np.concatenate((f_oa, f_na, f_pa, f_comb)), nan=0.0)
+
+# --- 3. UI and Processing ---
+uploaded_file = st.file_uploader("Upload audio/video", type=["wav", "mp3", "mp4", "mov", "mkv"])
 
 if uploaded_file:
-    # Save to temp file for processing
-    with open("temp.wav", "wb") as f:
-        f.write(uploaded_file.getbuffer())
+    # Handle media extraction
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_in:
+        tmp_in.write(uploaded_file.read())
+        tmp_path = tmp_in.name
     
-    # Process
-    features = process_audio_file("temp.wav")
-    features = np.nan_to_num(features, nan=0.0)
+    temp_wav = tempfile.mktemp(suffix=".wav")
+    clip = AudioFileClip(tmp_path)
+    clip.write_audiofile(temp_wav, fps=22050, logger=None)
+    audio, sr = librosa.load(temp_wav, sr=22050)
     
-    # Scale and reshape
-    features = scaler.transform(features.reshape(1, -1))
-    features = np.expand_dims(features, axis=-1)
+    # Sliding window processing (2.5s to match training)
+    window_samples = int(2.5 * sr)
+    step_samples = int(1.0 * sr) # Slide every 1 second
     
-    # Predict
-    preds = model.predict(features)
-    predicted_emotion = emotion_labels[np.argmax(preds)]
-    
-    st.write(f"### Predicted Emotion: {predicted_emotion}")
+    all_probabilities, time_stamps, dominant_emotions, confidences = [], [], [], []
+
+    for start in range(0, len(audio) - window_samples + 1, step_samples):
+        window = audio[start : start + window_samples]
+        features = extract_ser_features(window, sr)
+        
+        # Scale and Predict
+        scaled_features = scaler.transform(features.reshape(1, -1))
+        preds = model.predict(scaled_features.reshape(1, -1, 1), verbose=0)
+        
+        all_probabilities.append(preds[0])
+        dominant_emotions.append(emotion_labels[np.argmax(preds)])
+        confidences.append(np.max(preds))
+        time_stamps.append((start + window_samples/2) / sr)
+
+    # --- 4. Graphs ---
+    col1, col2 = st.columns(2)
+    with col1:
+        fig1, ax1 = plt.subplots()
+        ax1.plot(time_stamps, confidences, marker='o', color='purple')
+        ax1.set_title("Dominant Emotion Trend")
+        st.pyplot(fig1)
+
+    with col2:
+        fig2, ax2 = plt.subplots()
+        all_probs = np.array(all_probabilities)
+        for idx, label in emotion_labels.items():
+            ax2.plot(time_stamps, all_probs[:, idx], label=label)
+        ax2.legend()
+        ax2.set_title("Probability Breakdown")
+        st.pyplot(fig2)
+
+    st.metric("Final Predicted Emotion", emotion_labels[np.argmax(np.mean(all_probs, axis=0))])
