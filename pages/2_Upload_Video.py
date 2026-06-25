@@ -386,6 +386,12 @@ if uploaded_video is not None:
         with st.spinner("Running speech emotion recognition..."):
             ser_result = run_ser_pipeline(video_path, ser_model, scaler, make_cb(0.5, 1.0))
 
+        # Robust check
+        if ser_result is None or not ser_result.get("has_audio", True):
+            st.warning("No audio track detected or analysis failed. SER results unavailable.")
+            # Set a dummy empty result so the rest of the code doesn't break
+            ser_result = {"timestamps": np.array([]), "probs": np.zeros((0, N_UNIFIED)), "has_audio": False}
+
         progress_bar.progress(1.0)
         status_text.text("Analysis complete.")
         progress_bar.empty()
