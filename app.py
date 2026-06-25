@@ -4,6 +4,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from utils.theme import apply_theme
 
 apply_theme()
+render_sidebar():
 
 # ── Hero ────────────────────────────────────────────────────────
 st.markdown("""
