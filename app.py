@@ -37,8 +37,7 @@ PAGES = {
     "📤 Upload Interview": "pages/2_Upload_Video.py",
     "🎥 Live Interview": "pages/3_Live_Interview.py",
     "📊 Summary Report": "pages/4_Summary_Report.py",
-    "🔍 Detailed Report": "pages/5_Detailed_Report.py",
-    "📁 Past Interviews": "pages/6_Past_Interviews.py",  # adjust if your filename differs
+    "🔍 Detailed Report": "pages/5_Detailed_Report.py"
 }
 
 with st.sidebar:
