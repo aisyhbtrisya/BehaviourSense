@@ -39,14 +39,15 @@ from utils.mer_core import (
     FER_LABELS,
     SER_LABELS,
     N_UNIFIED,
+    FUSION_WEIGHTS,
     to_unified_vector,
     load_fer_model,
     load_ser_resources,
     load_face_cascade,
     extract_ser_features,
     fuse_results,
+    store_results,
     build_probability_chart,
-    build_dominant_chart,
     overall_dominant_emotion,
 )
 
@@ -310,14 +311,9 @@ ser_model, scaler, _encoder = load_ser_resources()
 face_cascade = load_face_cascade()
 
 st.subheader("Settings")
-c1, c2, c3 = st.columns(3)
-with c1:
-    fer_interval = st.slider("FER sampling interval (seconds)", 0.1, 2.0, 0.5, 0.1)
-with c2:
-    w_fer = st.slider("FER weight", 0.0, 1.0, 0.6, 0.05)
-with c3:
-    w_ser = round(1.0 - w_fer, 2)
-    st.metric("SER weight (auto)", w_ser)
+fer_interval = st.slider("FER sampling interval (seconds)", 0.1, 2.0, 0.5, 0.1)
+w_fer, w_ser = FUSION_WEIGHTS
+st.caption(f"Fusion is fixed at {int(w_fer*100)}% FER / {int(w_ser*100)}% SER.")
 
 col_reset, _ = st.columns([1, 4])
 with col_reset:
@@ -386,13 +382,25 @@ if ctx.state.playing:
 
         time.sleep(LOOP_SLEEP_SEC)
 
-    # Stream just stopped -> reveal the results section automatically.
+    # Stream just stopped. Clear the live placeholders and fall through to the
+    # confirmation below in the SAME run. (We deliberately avoid st.rerun() here:
+    # rerunning re-enters the app.py navigation wrapper, and any hiccup in the
+    # nav-radio state there can crash the page. Falling through is safe because
+    # ctx.state.playing is now False.)
+    fer_metric_ph.empty()
+    fer_chart_ph.empty()
+    ser_chart_ph.empty()
+
+    # Build + persist the fused result so the report pages can display it.
+    _fer_result = fer_result_from_store(fer_store)
+    _ser_result = ser_result_from_store(ser_store)
+    if _fer_result["probs"].shape[0] > 0 or _ser_result["probs"].shape[0] > 0:
+        _fusion = fuse_results(_fer_result, _ser_result, w_fer, w_ser)
+        store_results(_fer_result, _ser_result, _fusion, source="Live")
     st.session_state["live_show_results"] = True
-    st.rerun()
 
 # ------------------------------------------------------------------
-# RESULTS SECTION - identical experience to the Upload page.
-# Shown after the stream has stopped, if any data was captured.
+# CONFIRMATION  (the full graphs now live in the report pages)
 # ------------------------------------------------------------------
 fer_result = fer_result_from_store(fer_store)
 ser_result = ser_result_from_store(ser_store)
@@ -400,72 +408,23 @@ has_any_data = fer_result["probs"].shape[0] > 0 or ser_result["probs"].shape[0] 
 
 if not ctx.state.playing and has_any_data:
     st.divider()
-    st.subheader("Results")
+    st.success("✅ Live session finished and saved.")
 
-    if st.button("Display Result", type="primary"):
-        st.session_state["live_show_results"] = True
+    if fer_result["probs"].shape[0] > 0 and not fer_result["face_found"].any():
+        st.warning("No face was detected in any sampled frame — FER results will be empty (zero confidence).")
+    if ser_result["probs"].shape[0] == 0:
+        st.warning("No speech was analysed (no or insufficient audio) — SER results are empty.")
 
-    if st.session_state.get("live_show_results"):
-        if fer_result["probs"].shape[0] > 0 and not fer_result["face_found"].any():
-            st.warning("No face was detected in any sampled frame - FER results will be empty (zero confidence).")
-        if ser_result["probs"].shape[0] == 0:
-            st.warning("No speech was analysed (no or insufficient audio) - SER results are empty.")
+    fusion = st.session_state.get("mer_fusion")
+    if fusion is not None:
+        dom_label, dom_conf = overall_dominant_emotion(fusion["fused"])
+        st.metric("Final Predicted Emotion (Fused)", dom_label.capitalize(), f"{dom_conf:.1%} confidence")
 
-        fusion = fuse_results(fer_result, ser_result, w_fer, w_ser)
-
-        mode = st.radio(
-            "Select view",
-            options=["Multimodal", "FER", "SER"],
-            horizontal=True,
-            key="live_result_mode",
-        )
-
-        if mode == "Multimodal":
-            dom_label, dom_conf = overall_dominant_emotion(fusion["fused"])
-            st.metric("Final Predicted Emotion (Fused)", dom_label.capitalize(), f"{dom_conf:.1%} confidence")
-            st.plotly_chart(
-                build_probability_chart(fusion["timestamps"], fusion["fused"], "Multimodal Fused Emotion Probabilities Over Time"),
-                use_container_width=True,
-            )
-            st.plotly_chart(
-                build_dominant_chart(fusion["timestamps"], fusion["fused"], "Multimodal Dominant Emotion Confidence Over Time"),
-                use_container_width=True,
-            )
-
-        elif mode == "FER":
-            if fer_result["probs"].shape[0] == 0:
-                st.info("No FER data available for this session.")
-            else:
-                dom_label, dom_conf = overall_dominant_emotion(fer_result["probs"])
-                st.metric("Final Predicted Emotion (FER only)", dom_label.capitalize(), f"{dom_conf:.1%} confidence")
-                st.plotly_chart(
-                    build_probability_chart(fer_result["timestamps"], fer_result["probs"], "Facial Emotion Probabilities Over Time"),
-                    use_container_width=True,
-                )
-                st.plotly_chart(
-                    build_dominant_chart(fer_result["timestamps"], fer_result["probs"], "FER Dominant Emotion Confidence Over Time"),
-                    use_container_width=True,
-                )
-                n_no_face = int((~fer_result["face_found"]).sum())
-                if n_no_face:
-                    st.caption(f"No face detected in {n_no_face} of {len(fer_result['face_found'])} sampled frames (shown as zero confidence).")
-
-        elif mode == "SER":
-            if ser_result["probs"].shape[0] == 0:
-                st.info("No SER data available for this session (no audio analysed).")
-            else:
-                dom_label, dom_conf = overall_dominant_emotion(ser_result["probs"])
-                st.metric("Final Predicted Emotion (SER only)", dom_label.capitalize(), f"{dom_conf:.1%} confidence")
-                st.plotly_chart(
-                    build_probability_chart(ser_result["timestamps"], ser_result["probs"], "Speech Emotion Probabilities Over Time"),
-                    use_container_width=True,
-                )
-                st.plotly_chart(
-                    build_dominant_chart(ser_result["timestamps"], ser_result["probs"], "SER Dominant Emotion Confidence Over Time"),
-                    use_container_width=True,
-                )
-
-        st.caption("Tip: drag on the chart to zoom in on a time range, hover over any line to see exact confidence, and use the range slider below the x-axis. Double-click the chart to reset zoom.")
+    st.info(
+        "Open **📊 Summary Report** for the dominant-emotion overview and the "
+        "distribution donut, or **🔍 Detailed Report** for the full interactive "
+        "emotion timelines — both are in the sidebar."
+    )
 
 elif not ctx.state.playing and not has_any_data:
     st.info("No session recorded yet. Start the stream above, let it run, then stop to see results.")

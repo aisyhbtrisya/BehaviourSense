@@ -40,14 +40,14 @@ from utils.mer_core import (
     FER_LABELS,
     SER_LABELS,
     N_UNIFIED,
+    FUSION_WEIGHTS,
     to_unified_vector,
     load_fer_model,
     load_ser_resources,
     load_face_cascade,
     extract_ser_features,
     fuse_results,
-    build_probability_chart,
-    build_dominant_chart,
+    store_results,
     overall_dominant_emotion,
 )
 
@@ -236,14 +236,9 @@ if uploaded_video is not None:
     st.video(video_path)
 
     st.subheader("⚙️ Settings")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        sample_interval = st.slider("FER sampling interval (seconds)", 0.1, 3.0, 0.5, 0.1)
-    with c2:
-        w_fer = st.slider("FER weight", 0.0, 1.0, 0.6, 0.05)
-    with c3:
-        w_ser = round(1.0 - w_fer, 2)
-        st.metric("SER weight (auto)", w_ser)
+    sample_interval = st.slider("FER sampling interval (seconds)", 0.1, 3.0, 0.5, 0.1)
+    w_fer, w_ser = FUSION_WEIGHTS
+    st.caption(f"Fusion is fixed at {int(w_fer*100)}% FER / {int(w_ser*100)}% SER.")
 
     if st.button("🚀 Run Analysis", type="primary"):
         fer_model = load_fer_model()
@@ -283,80 +278,26 @@ if uploaded_video is not None:
 
         fusion = fuse_results(fer_result, ser_result, w_fer, w_ser)
 
-        # Persist everything needed for the result section across reruns
-        st.session_state["fer_result"] = fer_result
-        st.session_state["ser_result"] = ser_result
-        st.session_state["fusion"] = fusion
+        # Persist for the report pages (Detailed + Summary) and this page.
+        store_results(fer_result, ser_result, fusion, source="Upload")
         st.session_state["analysis_done"] = True
 
     # ------------------------------------------------------------------
-    # RESULTS SECTION
+    # CONFIRMATION  (the full graphs now live in the report pages)
     # ------------------------------------------------------------------
     if st.session_state.get("analysis_done"):
         st.divider()
-        st.subheader("📊 Results")
+        st.success("✅ Analysis complete and saved.")
 
-        if st.button("Display Result"):
-            st.session_state["show_results"] = True
+        results = st.session_state.get("mer_fusion")
+        if results is not None:
+            dom_label, dom_conf = overall_dominant_emotion(results["fused"])
+            st.metric("Final Predicted Emotion (Fused)", dom_label.capitalize(), f"{dom_conf:.1%} confidence")
 
-        if st.session_state.get("show_results"):
-            mode = st.radio(
-                "Select view",
-                options=["Multimodal", "FER", "SER"],
-                horizontal=True,
-                key="result_mode",
-            )
-
-            fer_result = st.session_state["fer_result"]
-            ser_result = st.session_state["ser_result"]
-            fusion = st.session_state["fusion"]
-
-            if mode == "Multimodal":
-                dom_label, dom_conf = overall_dominant_emotion(fusion["fused"])
-                st.metric("Final Predicted Emotion (Fused)", dom_label.capitalize(), f"{dom_conf:.1%} confidence")
-                st.plotly_chart(
-                    build_probability_chart(fusion["timestamps"], fusion["fused"], "Multimodal Fused Emotion Probabilities Over Time"),
-                    use_container_width=True,
-                )
-                st.plotly_chart(
-                    build_dominant_chart(fusion["timestamps"], fusion["fused"], "Multimodal Dominant Emotion Confidence Over Time"),
-                    use_container_width=True,
-                )
-
-            elif mode == "FER":
-                if fer_result["probs"].shape[0] == 0:
-                    st.info("No FER data available for this video.")
-                else:
-                    dom_label, dom_conf = overall_dominant_emotion(fer_result["probs"])
-                    st.metric("Final Predicted Emotion (FER only)", dom_label.capitalize(), f"{dom_conf:.1%} confidence")
-                    st.plotly_chart(
-                        build_probability_chart(fer_result["timestamps"], fer_result["probs"], "Facial Emotion Probabilities Over Time"),
-                        use_container_width=True,
-                    )
-                    st.plotly_chart(
-                        build_dominant_chart(fer_result["timestamps"], fer_result["probs"], "FER Dominant Emotion Confidence Over Time"),
-                        use_container_width=True,
-                    )
-                    n_no_face = int((~fer_result["face_found"]).sum())
-                    if n_no_face:
-                        st.caption(f"No face detected in {n_no_face} of {len(fer_result['face_found'])} sampled frames (shown as zero confidence).")
-
-            elif mode == "SER":
-                if ser_result["probs"].shape[0] == 0:
-                    st.info("No SER data available for this video (likely no audio track).")
-                else:
-                    dom_label, dom_conf = overall_dominant_emotion(ser_result["probs"])
-                    st.metric("Final Predicted Emotion (SER only)", dom_label.capitalize(), f"{dom_conf:.1%} confidence")
-                    st.plotly_chart(
-                        build_probability_chart(ser_result["timestamps"], ser_result["probs"], "Speech Emotion Probabilities Over Time"),
-                        use_container_width=True,
-                    )
-                    st.plotly_chart(
-                        build_dominant_chart(ser_result["timestamps"], ser_result["probs"], "SER Dominant Emotion Confidence Over Time"),
-                        use_container_width=True,
-                    )
-
-            st.caption("Tip: drag on the chart to zoom in on a time range, hover over any line to see exact confidence, and use the range slider below the x-axis. Double-click the chart to reset zoom.")
+        st.info(
+            "Open **📊 Summary Report** for the dominant-emotion overview and the "
+            "distribution donut, or **🔍 Detailed Report** for the full interactive "
+            "emotion timelines — both are in the sidebar."
+        )
 else:
     st.session_state["analysis_done"] = False
-    st.session_state["show_results"] = False

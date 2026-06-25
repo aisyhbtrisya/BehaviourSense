@@ -234,3 +234,172 @@ def overall_dominant_emotion(probs_matrix):
     mean_probs = np.mean(probs_matrix, axis=0)
     idx = int(np.argmax(mean_probs))
     return UNIFIED_LABELS[idx], float(mean_probs[idx])
+
+
+# ============================================================================
+# CROSS-PAGE RESULT SHARING + REPORT RENDERERS
+# ----------------------------------------------------------------------------
+# The Upload and Live pages run the analysis and STORE the results in
+# st.session_state. The Detailed Report and Summary Report pages READ them back
+# and render the visuals. This keeps the heavy graphs off the capture pages and
+# in the report pages, exactly as requested.
+# ============================================================================
+FUSION_WEIGHTS = (0.6, 0.4)  # (w_fer, w_ser) — fixed 60/40 fusion, app-wide
+
+
+def store_results(fer_result, ser_result, fusion, source):
+    """Persist the latest analysis so the report pages can display it."""
+    st.session_state["mer_fer_result"] = fer_result
+    st.session_state["mer_ser_result"] = ser_result
+    st.session_state["mer_fusion"] = fusion
+    st.session_state["mer_source"] = source
+    st.session_state["mer_has_result"] = True
+
+
+def get_results():
+    """Return the latest stored analysis, or None if nothing has run yet."""
+    if not st.session_state.get("mer_has_result"):
+        return None
+    return {
+        "fer_result": st.session_state.get("mer_fer_result"),
+        "ser_result": st.session_state.get("mer_ser_result"),
+        "fusion": st.session_state.get("mer_fusion"),
+        "source": st.session_state.get("mer_source", "—"),
+    }
+
+
+def build_distribution_donut(probs_matrix, title):
+    """Donut chart of the average emotion distribution over the whole session."""
+    if probs_matrix is None or probs_matrix.shape[0] == 0:
+        mean = np.zeros(N_UNIFIED)
+    else:
+        mean = probs_matrix.mean(axis=0)
+
+    total = mean.sum()
+    if total > 0:
+        mean = mean / total  # clean probability distribution that sums to 1
+
+    labels, values, colors = [], [], []
+    for name in UNIFIED_LABELS:
+        v = float(mean[UNIFIED_INDEX[name]])
+        if v > 0.005:  # hide negligible slices
+            labels.append(name.capitalize())
+            values.append(v)
+            colors.append(EMOTION_COLORS.get(name, "#333333"))
+
+    fig = go.Figure(go.Pie(
+        labels=labels,
+        values=values,
+        hole=0.62,
+        marker=dict(colors=colors, line=dict(color="white", width=2)),
+        textinfo="percent",
+        textposition="inside",
+        hovertemplate="<b>%{label}</b><br>%{percent}<extra></extra>",
+        sort=True,
+        direction="clockwise",
+    ))
+    fig.update_layout(
+        title=title,
+        height=440,
+        margin=dict(l=20, r=20, t=60, b=20),
+        legend=dict(orientation="v", yanchor="middle", y=0.5),
+    )
+    return fig
+
+
+def _no_results_notice():
+    st.info(
+        "No analysis yet. Run an interview on the **Upload Interview** or "
+        "**Live Interview** page first, then come back here."
+    )
+
+
+def render_detailed_report():
+    """Interactive time-series breakdown (Multimodal / FER / SER)."""
+    results = get_results()
+    if results is None:
+        _no_results_notice()
+        return
+
+    fer_result = results["fer_result"]
+    ser_result = results["ser_result"]
+    fusion = results["fusion"]
+    st.caption(f"Showing the most recent result · source: **{results['source']}**")
+
+    mode = st.radio("Select view", ["Multimodal", "FER", "SER"],
+                    horizontal=True, key="detailed_mode")
+
+    if mode == "Multimodal":
+        dom_label, dom_conf = overall_dominant_emotion(fusion["fused"])
+        st.metric("Final Predicted Emotion (Fused)", dom_label.capitalize(), f"{dom_conf:.1%} confidence")
+        st.plotly_chart(build_probability_chart(fusion["timestamps"], fusion["fused"],
+                        "Multimodal Fused Emotion Probabilities Over Time"), use_container_width=True)
+        st.plotly_chart(build_dominant_chart(fusion["timestamps"], fusion["fused"],
+                        "Multimodal Dominant Emotion Confidence Over Time"), use_container_width=True)
+
+    elif mode == "FER":
+        if fer_result["probs"].shape[0] == 0:
+            st.info("No FER data available.")
+        else:
+            dom_label, dom_conf = overall_dominant_emotion(fer_result["probs"])
+            st.metric("Final Predicted Emotion (FER only)", dom_label.capitalize(), f"{dom_conf:.1%} confidence")
+            st.plotly_chart(build_probability_chart(fer_result["timestamps"], fer_result["probs"],
+                            "Facial Emotion Probabilities Over Time"), use_container_width=True)
+            st.plotly_chart(build_dominant_chart(fer_result["timestamps"], fer_result["probs"],
+                            "FER Dominant Emotion Confidence Over Time"), use_container_width=True)
+            if "face_found" in fer_result and len(fer_result["face_found"]):
+                n_no_face = int((~fer_result["face_found"]).sum())
+                if n_no_face:
+                    st.caption(f"No face detected in {n_no_face} of {len(fer_result['face_found'])} sampled frames (shown as zero confidence).")
+
+    else:  # SER
+        if ser_result["probs"].shape[0] == 0:
+            st.info("No SER data available (no or insufficient audio).")
+        else:
+            dom_label, dom_conf = overall_dominant_emotion(ser_result["probs"])
+            st.metric("Final Predicted Emotion (SER only)", dom_label.capitalize(), f"{dom_conf:.1%} confidence")
+            st.plotly_chart(build_probability_chart(ser_result["timestamps"], ser_result["probs"],
+                            "Speech Emotion Probabilities Over Time"), use_container_width=True)
+            st.plotly_chart(build_dominant_chart(ser_result["timestamps"], ser_result["probs"],
+                            "SER Dominant Emotion Confidence Over Time"), use_container_width=True)
+
+    st.caption("Tip: drag to zoom, hover for exact confidence, use the range slider, double-click to reset.")
+
+
+def render_summary_report():
+    """High-level summary: dominant emotion per modality + a distribution donut."""
+    results = get_results()
+    if results is None:
+        _no_results_notice()
+        return
+
+    fer_result = results["fer_result"]
+    ser_result = results["ser_result"]
+    fusion = results["fusion"]
+    st.caption(f"Showing the most recent result · source: **{results['source']}**")
+
+    fus_lbl, fus_conf = overall_dominant_emotion(fusion["fused"])
+    fer_lbl, fer_conf = overall_dominant_emotion(fer_result["probs"])
+    ser_lbl, ser_conf = overall_dominant_emotion(ser_result["probs"])
+
+    st.subheader("Dominant emotion")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Multimodal (Fused)", fus_lbl.capitalize(), f"{fus_conf:.1%}")
+    m2.metric("Facial (FER)", fer_lbl.capitalize(), f"{fer_conf:.1%}")
+    m3.metric("Speech (SER)", ser_lbl.capitalize(), f"{ser_conf:.1%}")
+
+    st.subheader("Emotion distribution")
+    which = st.radio("Distribution for", ["Multimodal", "FER", "SER"],
+                     horizontal=True, key="summary_donut_mode")
+    if which == "Multimodal":
+        probs = fusion["fused"]
+    elif which == "FER":
+        probs = fer_result["probs"]
+    else:
+        probs = ser_result["probs"]
+
+    if probs is None or probs.shape[0] == 0:
+        st.info(f"No {which} data to chart.")
+    else:
+        st.plotly_chart(build_distribution_donut(probs, f"{which} — Emotion Distribution"),
+                        use_container_width=True)

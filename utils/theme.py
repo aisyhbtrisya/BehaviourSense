@@ -163,18 +163,44 @@ def apply_theme():
         margin: 24px 0;
     }
 
-    /* ── Sidebar overrides ── */
+    /* ── Sidebar ── */
     [data-testid="stSidebar"] {
         background: #0b1957 !important;
     }
-    [data-testid="stSidebar"] label,
-    [data-testid="stSidebar"] .stRadio label {
-        color: rgba(255,255,255,0.75) !important;
-        font-size: 13px;
-        font-weight: 500;
+    /* Hide Streamlit's auto-generated page nav so ONLY our custom radio nav
+       shows (this removes the confusing "two navbars" problem). */
+    [data-testid="stSidebarNav"] { display: none !important; }
+
+    /* Custom radio navigation — styled to look like clean nav items */
+    [data-testid="stSidebar"] [role="radiogroup"] {
+        gap: 4px;
     }
-    [data-testid="stSidebar"] .stRadio [data-testid="stMarkdownContainer"] p {
-        color: white;
+    [data-testid="stSidebar"] [role="radiogroup"] > label {
+        display: flex;
+        align-items: center;
+        padding: 9px 12px;
+        margin: 0;
+        border-radius: 10px;
+        cursor: pointer;
+        transition: background 0.15s ease;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] > label:hover {
+        background: rgba(255,255,255,0.06);
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) {
+        background: rgba(2,195,171,0.16);
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] [data-testid="stMarkdownContainer"] p {
+        color: white !important;
+        font-size: 15px;
+        font-weight: 500;
+        margin: 0;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) [data-testid="stMarkdownContainer"] p {
+        font-weight: 700;
+    }
+    [data-testid="stSidebar"] label {
+        color: rgba(255,255,255,0.75) !important;
     }
     </style>
     """, unsafe_allow_html=True)
