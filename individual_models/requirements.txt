@@ -1,5 +1,5 @@
 streamlit
-opencv-python-headless
+opencv-python
 numpy
 pillow
 tensorflow
@@ -7,3 +7,4 @@ matplotlib
 streamlit-webrtc
 librosa
 moviepy==1.0.3
+plotly
