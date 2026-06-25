@@ -196,28 +196,29 @@ def run_fer_pipeline(video_path, sample_interval, fer_model, face_cascade, progr
 def run_ser_pipeline(video_path, ser_model, scaler, progress_cb=None):
     temp_wav = tempfile.mktemp(suffix=".wav")
     
+    # Use VideoFileClip to ensure audio is loaded as part of the video object
+    from moviepy.editor import VideoFileClip
+    
     try:
-        # Load the video file
         clip = VideoFileClip(video_path)
-        
-        # Check if the video actually has an audio track
         if clip.audio is None:
+            # Fallback for silent/invalid audio
             clip.close()
             return {"timestamps": np.array([]), "probs": np.zeros((0, N_UNIFIED)), "has_audio": False}
         
-        # Extract audio
+        # Explicitly write audio
         clip.audio.write_audiofile(temp_wav, fps=22050, logger=None, verbose=False)
         clip.close()
-        
     except Exception as e:
-        st.error(f"Error processing audio: {e}")
+        st.error(f"Error extracting audio: {e}")
         return {"timestamps": np.array([]), "probs": np.zeros((0, N_UNIFIED)), "has_audio": False}
 
-    # Load audio for processing
+    # Load into librosa
     audio, sr = librosa.load(temp_wav, sr=22050)
     if os.path.exists(temp_wav):
         os.remove(temp_wav)
-
+        
+    # ... (Rest of the sliding window loop remains the same)
     # ... (Rest of your existing sliding window logic remains exactly the same) ...
     window_samples = int(2.5 * sr)
     step_samples = int(1.0 * sr)
