@@ -12,12 +12,11 @@ st.set_page_config(
 BASE = Path(__file__).resolve().parent
 
 pages = {
-    "🏠 Home": "app_pages/1_Homepage.py",
-    "📤 Upload Interview": "app_pages/2_Upload_Video.py",
-    "🎥 Live Interview": "app_pages/5_Live_Interview.py",
-    "📊 Summary Report": "app_pages/3_Summary_Report.py",
-    "🔍 Detailed Report": "app_pages/4_Detailed_Report.py",
-    "🗂️ Past Interviews": "app_pages/6_Past_Interviews.py",
+    "🏠 Home": "app.py",
+    "📤 Upload Interview": "pages/2_Upload_Video.py",
+    "🎥 Live Interview": "pages/3_Live_Interview.py",
+    "📊 Summary Report": "pages/4_Summary_Report.py",
+    "🔍 Detailed Report": "pages/5_Detailed_Report.py",
 }
 
 with st.sidebar:

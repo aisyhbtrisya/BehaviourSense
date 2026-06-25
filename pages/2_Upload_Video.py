@@ -41,6 +41,13 @@ from moviepy import AudioFileClip, VideoFileClip
 from tensorflow.keras import layers
 from tensorflow.keras.models import load_model
 
+st.set_page_config(
+    page_title="BehaviourSense AI",
+    page_icon="🧠",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
 apply_theme()
 
 st.set_page_config(page_title="Multimodal Emotion Recognition", layout="wide")
