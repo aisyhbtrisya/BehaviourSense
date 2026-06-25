@@ -59,17 +59,17 @@ def render_sidebar():
     # Navigation items mapped to file paths
     # Ensure these match your actual filenames in the 'pages/' folder
     nav = {
-        "Home": ("🏠", "1_Homepage"),
-        "Upload Interview": ("📤", "2_Upload_Video"),
-        "Live Interview": ("🎥", "3_Live_Interview"),
-        "Summary Report": ("📊", "4_Summary_Report"),
-        "Detailed Report": ("🔍", "5_Detailed_Report")
+        "Home": ("🏠", "app.py"),
+        "Upload Interview": ("📤", "pages/2_Upload_Video"),
+        "Live Interview": ("🎥", "pages/3_Live_Interview"),
+        "Summary Report": ("📊", "pages/4_Summary_Report"),
+        "Detailed Report": ("🔍", "pages/5_Detailed_Report")
     }
 
     for label, (icon, file) in nav.items():
         if st.sidebar.button(f"{icon} {label}"):
             # This handles the navigation to the corresponding .py file
             # If the file is in 'pages/', use f"pages/{file}"
-            st.switch_page(f"pages/{file}.py")
+            st.switch_page(f"{file}.py")
 
 
