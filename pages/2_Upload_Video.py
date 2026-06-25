@@ -1,4 +1,3 @@
-
 """
 2_Upload_Video.py
 ==================
@@ -41,16 +40,21 @@ from moviepy import AudioFileClip, VideoFileClip
 from tensorflow.keras import layers
 from tensorflow.keras.models import load_model
 
-st.set_page_config(
-    page_title="BehaviourSense AI",
-    page_icon="🧠",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# st.set_page_config can only be called once per session AND must be the first
+# Streamlit command. When this page is launched through app.py (which already
+# calls it before runpy), a second call raises StreamlitAPIException. Guarding
+# it lets the page work both standalone and when embedded by app.py.
+try:
+    st.set_page_config(
+        page_title="BehaviourSense AI",
+        page_icon="🧠",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+except Exception:
+    pass
 
 apply_theme()
-
-st.set_page_config(page_title="Multimodal Emotion Recognition", layout="wide")
 
 # ============================================================================
 # 1. LABELS  (unified label space = union of FER + SER classes)
@@ -201,34 +205,93 @@ def run_fer_pipeline(video_path, sample_interval, fer_model, face_cascade, progr
 # ============================================================================
 
 def run_ser_pipeline(video_path, ser_model, scaler, progress_cb=None):
+    """
+    Extract the audio track from the uploaded video and run Speech Emotion
+    Recognition over it with a sliding window. Returns probabilities projected
+    into the UNIFIED label space so they can be fused with FER.
+
+    Returns a dict:
+        {
+            "timestamps": np.ndarray[float],          # window centre times (s)
+            "probs":      np.ndarray[n_windows, N_UNIFIED],
+            "has_audio":  bool,
+        }
+    """
+    empty = {"timestamps": np.array([]), "probs": np.zeros((0, N_UNIFIED)), "has_audio": False}
     temp_wav = tempfile.mktemp(suffix=".wav")
-    
+
+    # ---- 1. Extract the audio track ------------------------------------
     try:
-        # Load the video file
         clip = VideoFileClip(video_path)
-        
-        # Check if the video actually has an audio track
+
+        # No audio stream at all -> nothing for SER to do.
         if clip.audio is None:
             clip.close()
-            return {"timestamps": np.array([]), "probs": np.zeros((0, N_UNIFIED)), "has_audio": False}
-        
-        # Extract audio
-        clip.audio.write_audiofile(temp_wav, fps=22050, logger=None, verbose=False)
+            return empty
+
+        # NOTE: moviepy >= 2.0 removed the `verbose` argument from
+        # write_audiofile(); passing it raises TypeError. Use `logger=None`
+        # to stay quiet instead.
+        clip.audio.write_audiofile(temp_wav, fps=22050, logger=None)
         clip.close()
-        
     except Exception as e:
-        st.error(f"Error processing audio: {e}")
-        return {"timestamps": np.array([]), "probs": np.zeros((0, N_UNIFIED)), "has_audio": False}
+        st.error(f"Error extracting audio: {e}")
+        return empty
 
-    # Load audio for processing
-    audio, sr = librosa.load(temp_wav, sr=22050)
-    if os.path.exists(temp_wav):
-        os.remove(temp_wav)
+    # ---- 2. Load the waveform -----------------------------------------
+    try:
+        audio, sr = librosa.load(temp_wav, sr=22050)
+    except Exception as e:
+        st.error(f"Error loading audio: {e}")
+        return empty
+    finally:
+        if os.path.exists(temp_wav):
+            os.remove(temp_wav)
 
-    # ... (Rest of your existing sliding window logic remains exactly the same) ...
+    if audio is None or len(audio) == 0:
+        return empty
+
+    # ---- 3. Sliding window (must match the SER training config) --------
+    # 2.5 s windows, stepped every 1.0 s, sr = 22050 -> feature vector of
+    # length 14688, which is exactly what scaler / model expect.
     window_samples = int(2.5 * sr)
     step_samples = int(1.0 * sr)
-    # ... etc
+
+    # If the clip is shorter than one window, pad it so we still get a
+    # single prediction (keeps short uploads from returning empty SER).
+    if len(audio) < window_samples:
+        audio = np.pad(audio, (0, window_samples - len(audio)), mode="constant")
+
+    starts = list(range(0, len(audio) - window_samples + 1, step_samples))
+    if not starts:
+        starts = [0]
+
+    timestamps, unified_probs_list = [], []
+    n_windows = len(starts)
+
+    for i, start in enumerate(starts):
+        window = audio[start:start + window_samples]
+
+        # Feature extraction -> scale -> predict (identical to the
+        # standalone SER app that already works).
+        features = extract_ser_features(window, sr)
+        scaled = scaler.transform(features.reshape(1, -1))
+        preds = ser_model.predict(scaled.reshape(1, -1, 1), verbose=0)[0]
+
+        # Project the 6-class SER distribution into the unified label space.
+        unified_probs_list.append(to_unified_vector(preds, SER_LABELS))
+
+        # Window-centre timestamp (seconds), matching the standalone app.
+        timestamps.append((start + window_samples / 2) / sr)
+
+        if progress_cb is not None:
+            progress_cb((i + 1) / n_windows, f"SER: analyzing window at {timestamps[-1]:.1f}s")
+
+    return {
+        "timestamps": np.array(timestamps, dtype=float),
+        "probs": np.array(unified_probs_list) if unified_probs_list else np.zeros((0, N_UNIFIED)),
+        "has_audio": True,
+    }
 
 
 # ============================================================================
