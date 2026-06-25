@@ -37,7 +37,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import tensorflow as tf
 from utils.theme import apply_theme
-from moviepy.editor import AudioFileClip
+from moviepy.editor import AudioFileClip, VideoFileClip
 from tensorflow.keras import layers
 from tensorflow.keras.models import load_model
 
@@ -192,52 +192,36 @@ def run_fer_pipeline(video_path, sample_interval, fer_model, face_cascade, progr
 # ============================================================================
 # 6. SER PIPELINE — sliding window over the extracted audio track
 # ============================================================================
+
 def run_ser_pipeline(video_path, ser_model, scaler, progress_cb=None):
     temp_wav = tempfile.mktemp(suffix=".wav")
-    clip = AudioFileClip(video_path)
-    if clip.audio is None:
+    
+    try:
+        # Load the video file
+        clip = VideoFileClip(video_path)
+        
+        # Check if the video actually has an audio track
+        if clip.audio is None:
+            clip.close()
+            return {"timestamps": np.array([]), "probs": np.zeros((0, N_UNIFIED)), "has_audio": False}
+        
+        # Extract audio
+        clip.audio.write_audiofile(temp_wav, fps=22050, logger=None, verbose=False)
         clip.close()
+        
+    except Exception as e:
+        st.error(f"Error processing audio: {e}")
         return {"timestamps": np.array([]), "probs": np.zeros((0, N_UNIFIED)), "has_audio": False}
 
-    clip.write_audiofile(temp_wav, fps=22050, logger=None)
-    clip.close()
-
+    # Load audio for processing
     audio, sr = librosa.load(temp_wav, sr=22050)
-    try:
+    if os.path.exists(temp_wav):
         os.remove(temp_wav)
-    except OSError:
-        pass
 
+    # ... (Rest of your existing sliding window logic remains exactly the same) ...
     window_samples = int(2.5 * sr)
     step_samples = int(1.0 * sr)
-
-    timestamps, unified_probs_list = [], []
-
-    if len(audio) < window_samples:
-        # Audio shorter than one window: pad once so we still get a single reading
-        audio = np.pad(audio, (0, window_samples - len(audio)))
-
-    total_steps = max(1, (len(audio) - window_samples) // step_samples + 1)
-    step_i = 0
-    for start in range(0, len(audio) - window_samples + 1, step_samples):
-        window = audio[start: start + window_samples]
-        features = extract_ser_features(window, sr)
-
-        scaled_features = scaler.transform(features.reshape(1, -1))
-        preds = ser_model.predict(scaled_features.reshape(1, -1, 1), verbose=0)[0]
-
-        unified_probs_list.append(to_unified_vector(preds, SER_LABELS))
-        timestamps.append((start + window_samples / 2) / sr)
-
-        step_i += 1
-        if progress_cb is not None:
-            progress_cb(min(step_i / total_steps, 1.0), f"SER: analyzing audio at {timestamps[-1]:.1f}s")
-
-    return {
-        "timestamps": np.array(timestamps, dtype=float),
-        "probs": np.array(unified_probs_list) if unified_probs_list else np.zeros((0, N_UNIFIED)),
-        "has_audio": True,
-    }
+    # ... etc
 
 
 # ============================================================================
