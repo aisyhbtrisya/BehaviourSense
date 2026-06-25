@@ -1,10 +1,10 @@
 streamlit
-opencv-python-headless
+opencv-contrib-python-headless
 numpy
 pillow
 tensorflow
 matplotlib
 streamlit-webrtc
-librosa
+librosa>=0.11.0
 moviepy==1.0.3
-plotly
+plotly 
