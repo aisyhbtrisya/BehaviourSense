@@ -40,6 +40,7 @@ from utils.theme import apply_theme
 from moviepy.editor import AudioFileClip
 from tensorflow.keras import layers
 from tensorflow.keras.models import load_model
+
 apply_theme()
 
 st.set_page_config(page_title="Multimodal Emotion Recognition", layout="wide")
