@@ -37,7 +37,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import tensorflow as tf
 from utils.theme import apply_theme
-from moviepy.editor import AudioFileClip, VideoFileClip
+from moviepy import AudioFileClip, VideoFileClip
 from tensorflow.keras import layers
 from tensorflow.keras.models import load_model
 
