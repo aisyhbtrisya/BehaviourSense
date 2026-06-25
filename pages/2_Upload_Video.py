@@ -36,13 +36,12 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 import tensorflow as tf
-from utils.theme import apply_theme, render_sidebar
+from utils.theme import apply_theme
 from moviepy import AudioFileClip, VideoFileClip
 from tensorflow.keras import layers
 from tensorflow.keras.models import load_model
 
 apply_theme()
-render_sidebar()
 
 st.set_page_config(page_title="Multimodal Emotion Recognition", layout="wide")
 
