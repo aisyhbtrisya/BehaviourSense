@@ -88,6 +88,18 @@ class FERStore:
         self.face_found = []        # list[bool]
         self.last_label = "-"       # for the on-frame caption
         self.last_conf = 0.0
+        self.session_start = time.time()
+
+
+class FrameStore:
+    """Holds only the most recent raw video frame (as a numpy array) so the
+    callback thread can hand it off cheaply, and the main thread can pick it
+    up and do the actual face-detection + FER prediction work."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.latest_bgr = None     # most recent frame, BGR, already mirrored
+        self.label_text = ""       # text to draw on the NEXT outgoing frame
+        self.box = None            # (x, y, w, h) of the last detected face, or None
 
 
 class AudioStore:
@@ -112,88 +124,130 @@ def _get_store(key, factory):
 
 
 # ============================================================================
-# VIDEO PROCESSOR - FER + face box (based on fer_live_video_app.py)
+# VIDEO PROCESSOR - thin frame relay ONLY.
+#
+# IMPORTANT: this callback runs on streamlit-webrtc's own aiortc event-loop
+# thread, not Streamlit's main thread (this is documented behaviour of the
+# library). Calling into TensorFlow or OpenCV's cascade classifier from that
+# thread the first time those native libraries are touched is what was
+# segfaulting the container with no Python traceback. So this callback does
+# the absolute minimum: convert the frame, mirror it, draw whatever label the
+# main thread already computed, and hand a copy of the raw frame to the main
+# thread for the ACTUAL face detection + FER prediction. No cv2.Cascade, no
+# model.predict(), and no other native ML call happens here.
 # ============================================================================
 class FERVideoProcessor(VideoProcessorBase):
-    def __init__(self, store, fer_model, face_cascade, interval):
-        self.store = store
-        self.model = fer_model
-        self.face_cascade = face_cascade
+    def __init__(self, frame_store, interval):
+        self.frame_store = frame_store
         self.interval = interval
         self.start_time = time.time()
-        self.last_analysis_time = -1e9
+        self.last_handoff_time = -1e9
 
     def recv(self, frame):
         try:
-            return self._process(frame)
+            img = frame.to_ndarray(format="bgr24")
+            img = cv2.flip(img, 1)  # mirror for a natural selfie view
         except Exception:
-            # Whatever went wrong with this frame, pass the original frame
-            # through unchanged rather than letting the exception propagate
-            # back into aiortc's event loop (which can otherwise destabilize
-            # the whole media pipeline).
             return frame
 
-    def _process(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        img = cv2.flip(img, 1)  # mirror for a natural selfie view
-
         current_time = time.time() - self.start_time
+
+        # Hand off a copy of the frame to the main thread at most once per
+        # `interval` seconds (cheap: just a numpy copy + lock, no detection).
+        if current_time - self.last_handoff_time >= self.interval:
+            self.last_handoff_time = current_time
+            try:
+                with self.frame_store.lock:
+                    self.frame_store.latest_bgr = img.copy()
+            except Exception:
+                pass
+
+        # Draw whatever label/box the main thread computed for the most
+        # recent frame it processed (cheap: just text + a rectangle).
+        try:
+            with self.frame_store.lock:
+                label_text = self.frame_store.label_text
+                box = self.frame_store.box
+            if box is not None:
+                x, y, w, h = box
+                cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                if label_text:
+                    cv2.putText(img, label_text, (x, max(20, y - 10)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        except Exception:
+            pass
+
+        try:
+            return frame.from_ndarray(img, format="bgr24")
+        except Exception:
+            return frame
+
+
+def maybe_run_live_fer(frame_store, fer_store, fer_model, face_cascade):
+    """
+    Runs ONCE PER MAIN-THREAD LOOP TICK (called from the same place as
+    maybe_run_live_ser). Picks up the latest frame the callback handed off,
+    does face detection (OpenCV) and FER prediction (TensorFlow) here, on the
+    main thread, and writes both the emotion log AND the box/label back to
+    frame_store so the callback can draw them on the next frame it sees.
+    """
+    with frame_store.lock:
+        img = frame_store.latest_bgr
+        frame_store.latest_bgr = None  # consume it; don't reprocess the same frame
+    if img is None:
+        return
+
+    current_time = time.time()
+
+    try:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         image_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+    except Exception:
+        return
 
-        # Run the FER model at most once per `interval` seconds.
-        if current_time - self.last_analysis_time >= self.interval:
-            self.last_analysis_time = current_time
+    if len(faces) == 0:
+        with frame_store.lock:
+            frame_store.box = None
+            frame_store.label_text = ""
+        with fer_store.lock:
+            fer_store.timestamps.append(round(current_time - fer_store.session_start, 2))
+            fer_store.unified_probs.append(np.zeros(N_UNIFIED))
+            fer_store.face_found.append(False)
+        return
 
-            if len(faces) > 0:
-                x, y, w, h = faces[0]
-                face = image_rgb[y:y + h, x:x + w]
-                if face.size > 0:
-                    try:
-                        face_resized = cv2.resize(face, (224, 224))
-                        face_input = np.expand_dims(face_resized / 255.0, axis=0)
-                        prediction = self.model.predict(face_input, verbose=0)[0]
+    x, y, w, h = faces[0]
+    face = image_rgb[y:y + h, x:x + w]
+    if face.size == 0:
+        with frame_store.lock:
+            frame_store.box = (x, y, w, h)
+            frame_store.label_text = ""
+        return
 
-                        unified = to_unified_vector(prediction, FER_LABELS)
-                        dom_idx = int(np.argmax(prediction))
-                        dom_name = FER_LABELS[dom_idx]
-                        dom_conf = float(prediction[dom_idx])
+    try:
+        face_resized = cv2.resize(face, (224, 224))
+        face_input = np.expand_dims(face_resized / 255.0, axis=0)
+        prediction = fer_model.predict(face_input, verbose=0)[0]
+    except Exception:
+        with frame_store.lock:
+            frame_store.box = (x, y, w, h)
+        return
 
-                        with self.store.lock:
-                            self.store.timestamps.append(round(current_time, 2))
-                            self.store.unified_probs.append(unified)
-                            self.store.face_found.append(True)
-                            self.store.last_label = dom_name
-                            self.store.last_conf = dom_conf
-                    except Exception:
-                        # Never let a prediction error kill the media stream;
-                        # just record this frame as a miss and keep going.
-                        self._log_no_face(current_time)
-                else:
-                    self._log_no_face(current_time)
-            else:
-                self._log_no_face(current_time)
+    unified = to_unified_vector(prediction, FER_LABELS)
+    dom_idx = int(np.argmax(prediction))
+    dom_name = FER_LABELS[dom_idx]
+    dom_conf = float(prediction[dom_idx])
 
-        # Always draw the box(es) on the live feed, with the latest label.
-        with self.store.lock:
-            label_txt = (
-                f"{self.store.last_label.upper()} ({self.store.last_conf * 100:.1f}%)"
-                if self.store.last_label != "-" else ""
-            )
-        for (x, y, w, h) in faces:
-            cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            if label_txt:
-                cv2.putText(img, label_txt, (x, max(20, y - 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    with frame_store.lock:
+        frame_store.box = (x, y, w, h)
+        frame_store.label_text = f"{dom_name.upper()} ({dom_conf * 100:.1f}%)"
 
-        return frame.from_ndarray(img, format="bgr24")
-
-    def _log_no_face(self, current_time):
-        with self.store.lock:
-            self.store.timestamps.append(round(current_time, 2))
-            self.store.unified_probs.append(np.zeros(N_UNIFIED))
-            self.store.face_found.append(False)
+    with fer_store.lock:
+        fer_store.timestamps.append(round(current_time - fer_store.session_start, 2))
+        fer_store.unified_probs.append(unified)
+        fer_store.face_found.append(True)
+        fer_store.last_label = dom_name
+        fer_store.last_conf = dom_conf
 
 
 # ============================================================================
@@ -318,6 +372,7 @@ st.caption(
 )
 
 fer_store = _get_store("live_fer_store", FERStore)
+frame_store = _get_store("live_frame_store", FrameStore)
 audio_store = _get_store("live_audio_store", AudioStore)
 ser_store = _get_store("live_ser_store", SERStore)
 
@@ -343,7 +398,7 @@ st.caption(f"Fusion is fixed at {int(w_fer*100)}% FER / {int(w_ser*100)}% SER.")
 col_reset, _ = st.columns([1, 4])
 with col_reset:
     if st.button("Clear session data"):
-        for k in ("live_fer_store", "live_audio_store", "live_ser_store"):
+        for k in ("live_fer_store", "live_frame_store", "live_audio_store", "live_ser_store"):
             st.session_state.pop(k, None)
         st.session_state["live_show_results"] = False
         st.rerun()
@@ -356,7 +411,7 @@ ctx = webrtc_streamer(
     key="live-interview",
     mode=WebRtcMode.SENDRECV,
     rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-    video_processor_factory=lambda: FERVideoProcessor(fer_store, fer_model, face_cascade, fer_interval),
+    video_processor_factory=lambda: FERVideoProcessor(frame_store, fer_interval),
     audio_processor_factory=lambda: AudioBufferProcessor(audio_store),
     media_stream_constraints={"video": True, "audio": True},
     async_processing=True,
@@ -376,6 +431,9 @@ if ctx.state.playing:
     i = 0
     while ctx.state.playing:
         i += 1
+
+        # ---- live FER (heavy work: cv2 cascade + TF predict — main thread only)
+        maybe_run_live_fer(frame_store, fer_store, fer_model, face_cascade)
 
         # ---- live SER (heavy work, but on the main thread, not the callback)
         maybe_run_live_ser(audio_store, ser_store, ser_model, scaler, last_ser_run)
