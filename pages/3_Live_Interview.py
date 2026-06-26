@@ -44,7 +44,6 @@ from utils.mer_core import (
     load_fer_model,
     load_ser_resources,
     load_face_cascade,
-    warm_up_models,
     extract_ser_features,
     fuse_results,
     store_results,
@@ -376,19 +375,14 @@ frame_store = _get_store("live_frame_store", FrameStore)
 audio_store = _get_store("live_audio_store", AudioStore)
 ser_store = _get_store("live_ser_store", SERStore)
 
-# Load models (cached). Done up-front so the worker threads have them ready.
+# Load models (cached). All actual inference happens later, on the main thread,
+# inside the live loop (see maybe_run_live_fer / maybe_run_live_ser) — exactly
+# like the Upload page does it, which works fine. We deliberately do NOT run any
+# model.predict() or librosa feature extraction here at page-load time: doing so
+# was crashing this CPU-only container before the page even finished rendering.
 fer_model = load_fer_model()
 ser_model, scaler, _encoder = load_ser_resources()
 face_cascade = load_face_cascade()
-
-# Run both models once on THIS (main) thread before the webrtc stream starts.
-# See the docstring on warm_up_models for why this matters: it prevents the
-# webrtc callback thread from ever being the first caller of a freshly loaded
-# TF model, which is what was segfaulting the container.
-if "models_warmed_up" not in st.session_state:
-    with st.spinner("Warming up models..."):
-        warm_up_models(fer_model, ser_model, scaler)
-    st.session_state["models_warmed_up"] = True
 
 st.subheader("Settings")
 fer_interval = st.slider("FER sampling interval (seconds)", 0.1, 2.0, 0.5, 0.1)
