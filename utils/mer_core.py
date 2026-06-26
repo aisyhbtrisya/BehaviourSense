@@ -19,7 +19,9 @@ Contents:
   - overall_dominant_emotion()  : mean-probability winner
 """
 
+import os
 import pickle
+import tempfile
 
 import cv2
 import librosa
@@ -277,25 +279,63 @@ def overall_dominant_emotion(probs_matrix):
 FUSION_WEIGHTS = (0.6, 0.4)  # (w_fer, w_ser) — fixed 60/40 fusion, app-wide
 
 
+# Disk fallback so results survive a process restart and are reliably shared
+# across pages (st.session_state alone is per-process and is wiped on any
+# reboot/crash, which is why the report pages could show up empty).
+_RESULTS_PATH = os.path.join(tempfile.gettempdir(), "behavioursense_last_result.pkl")
+
+
 def store_results(fer_result, ser_result, fusion, source):
-    """Persist the latest analysis so the report pages can display it."""
+    """Persist the latest analysis so the report pages can display it.
+
+    Writes to BOTH st.session_state (fast path) and a temp file on disk
+    (durable path). The disk copy means the Summary/Detailed pages still find
+    the result even after a restart or when run in a fresh script context.
+    """
+    payload = {
+        "fer_result": fer_result,
+        "ser_result": ser_result,
+        "fusion": fusion,
+        "source": source,
+    }
     st.session_state["mer_fer_result"] = fer_result
     st.session_state["mer_ser_result"] = ser_result
     st.session_state["mer_fusion"] = fusion
     st.session_state["mer_source"] = source
     st.session_state["mer_has_result"] = True
+    try:
+        with open(_RESULTS_PATH, "wb") as f:
+            pickle.dump(payload, f)
+    except Exception:
+        pass  # disk is a bonus; session_state still works within this session
 
 
 def get_results():
-    """Return the latest stored analysis, or None if nothing has run yet."""
-    if not st.session_state.get("mer_has_result"):
+    """Return the latest stored analysis, or None if nothing has run yet.
+
+    Prefers st.session_state; falls back to the on-disk copy so the report
+    pages keep working across reruns, page switches, and restarts.
+    """
+    if st.session_state.get("mer_has_result"):
+        return {
+            "fer_result": st.session_state.get("mer_fer_result"),
+            "ser_result": st.session_state.get("mer_ser_result"),
+            "fusion": st.session_state.get("mer_fusion"),
+            "source": st.session_state.get("mer_source", "—"),
+        }
+    # Fall back to disk (e.g. after a restart that cleared session_state).
+    try:
+        with open(_RESULTS_PATH, "rb") as f:
+            payload = pickle.load(f)
+        # Re-hydrate session_state so subsequent reads on this page are fast.
+        st.session_state["mer_fer_result"] = payload["fer_result"]
+        st.session_state["mer_ser_result"] = payload["ser_result"]
+        st.session_state["mer_fusion"] = payload["fusion"]
+        st.session_state["mer_source"] = payload.get("source", "—")
+        st.session_state["mer_has_result"] = True
+        return payload
+    except Exception:
         return None
-    return {
-        "fer_result": st.session_state.get("mer_fer_result"),
-        "ser_result": st.session_state.get("mer_ser_result"),
-        "fusion": st.session_state.get("mer_fusion"),
-        "source": st.session_state.get("mer_source", "—"),
-    }
 
 
 def build_distribution_donut(probs_matrix, title):
