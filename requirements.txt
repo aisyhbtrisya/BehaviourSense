@@ -4,7 +4,9 @@ numpy
 pillow
 tensorflow
 matplotlib
-streamlit-webrtc
+streamlit-webrtc==0.47.9
+av==10.0.0
+aiortc==1.5.0
 librosa>=0.11.0
 numba>=0.59.0
 moviepy>=2.0.0

@@ -96,6 +96,36 @@ def load_face_cascade():
     return cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
 
+def warm_up_models(fer_model, ser_model, scaler):
+    """
+    Run one dummy forward pass through each model on the CURRENT (main) thread.
+
+    Why this matters for the live page: streamlit-webrtc calls
+    VideoProcessor.recv()/AudioProcessor.recv() from its own background event
+    loop thread, not Streamlit's main thread. The *first* call to a freshly
+    loaded TensorFlow model triggers lazy op/kernel registration and graph
+    tracing; doing that for the first time from a non-main thread inside a
+    thin native wrapper (the webrtc event loop) is a known source of hard
+    segfaults on minimal/cloud containers (no Python traceback — the whole
+    process dies). Warming the models up here, on the main thread, before the
+    stream starts means the callback thread's calls are never "the first
+    ever" call, which avoids that class of crash entirely.
+    """
+    try:
+        dummy_face = np.zeros((1, 224, 224, 3), dtype=np.float32)
+        fer_model.predict(dummy_face, verbose=0)
+    except Exception:
+        pass  # best-effort warmup; real errors will surface on first real use
+
+    try:
+        dummy_audio = np.zeros(int(2.5 * 22050), dtype=np.float32)
+        feats = extract_ser_features(dummy_audio, 22050)
+        scaled = scaler.transform(feats.reshape(1, -1))
+        ser_model.predict(scaled.reshape(1, -1, 1), verbose=0)
+    except Exception:
+        pass
+
+
 # ============================================================================
 # SER FEATURE EXTRACTION (matches training pipeline -> 14688-d vector)
 # ============================================================================

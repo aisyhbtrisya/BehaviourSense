@@ -1,1 +1,9 @@
 libgl1
+libavformat-dev
+libavdevice-dev
+libavfilter-dev
+libavcodec-dev
+libswscale-dev
+libsrtp2-dev
+libopus-dev
+libvpx-dev

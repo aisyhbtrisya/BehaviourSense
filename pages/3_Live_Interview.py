@@ -44,6 +44,7 @@ from utils.mer_core import (
     load_fer_model,
     load_ser_resources,
     load_face_cascade,
+    warm_up_models,
     extract_ser_features,
     fuse_results,
     store_results,
@@ -123,6 +124,16 @@ class FERVideoProcessor(VideoProcessorBase):
         self.last_analysis_time = -1e9
 
     def recv(self, frame):
+        try:
+            return self._process(frame)
+        except Exception:
+            # Whatever went wrong with this frame, pass the original frame
+            # through unchanged rather than letting the exception propagate
+            # back into aiortc's event loop (which can otherwise destabilize
+            # the whole media pipeline).
+            return frame
+
+    def _process(self, frame):
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)  # mirror for a natural selfie view
 
@@ -139,21 +150,26 @@ class FERVideoProcessor(VideoProcessorBase):
                 x, y, w, h = faces[0]
                 face = image_rgb[y:y + h, x:x + w]
                 if face.size > 0:
-                    face_resized = cv2.resize(face, (224, 224))
-                    face_input = np.expand_dims(face_resized / 255.0, axis=0)
-                    prediction = self.model.predict(face_input, verbose=0)[0]
+                    try:
+                        face_resized = cv2.resize(face, (224, 224))
+                        face_input = np.expand_dims(face_resized / 255.0, axis=0)
+                        prediction = self.model.predict(face_input, verbose=0)[0]
 
-                    unified = to_unified_vector(prediction, FER_LABELS)
-                    dom_idx = int(np.argmax(prediction))
-                    dom_name = FER_LABELS[dom_idx]
-                    dom_conf = float(prediction[dom_idx])
+                        unified = to_unified_vector(prediction, FER_LABELS)
+                        dom_idx = int(np.argmax(prediction))
+                        dom_name = FER_LABELS[dom_idx]
+                        dom_conf = float(prediction[dom_idx])
 
-                    with self.store.lock:
-                        self.store.timestamps.append(round(current_time, 2))
-                        self.store.unified_probs.append(unified)
-                        self.store.face_found.append(True)
-                        self.store.last_label = dom_name
-                        self.store.last_conf = dom_conf
+                        with self.store.lock:
+                            self.store.timestamps.append(round(current_time, 2))
+                            self.store.unified_probs.append(unified)
+                            self.store.face_found.append(True)
+                            self.store.last_label = dom_name
+                            self.store.last_conf = dom_conf
+                    except Exception:
+                        # Never let a prediction error kill the media stream;
+                        # just record this frame as a miss and keep going.
+                        self._log_no_face(current_time)
                 else:
                     self._log_no_face(current_time)
             else:
@@ -309,6 +325,15 @@ ser_store = _get_store("live_ser_store", SERStore)
 fer_model = load_fer_model()
 ser_model, scaler, _encoder = load_ser_resources()
 face_cascade = load_face_cascade()
+
+# Run both models once on THIS (main) thread before the webrtc stream starts.
+# See the docstring on warm_up_models for why this matters: it prevents the
+# webrtc callback thread from ever being the first caller of a freshly loaded
+# TF model, which is what was segfaulting the container.
+if "models_warmed_up" not in st.session_state:
+    with st.spinner("Warming up models..."):
+        warm_up_models(fer_model, ser_model, scaler)
+    st.session_state["models_warmed_up"] = True
 
 st.subheader("Settings")
 fer_interval = st.slider("FER sampling interval (seconds)", 0.1, 2.0, 0.5, 0.1)
