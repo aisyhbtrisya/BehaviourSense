@@ -22,6 +22,7 @@ Contents:
 import os
 import pickle
 import tempfile
+import time
 
 import cv2
 import librosa
@@ -289,19 +290,22 @@ def store_results(fer_result, ser_result, fusion, source):
     """Persist the latest analysis so the report pages can display it.
 
     Writes to BOTH st.session_state (fast path) and a temp file on disk
-    (durable path). The disk copy means the Summary/Detailed pages still find
-    the result even after a restart or when run in a fresh script context.
+    (durable path, shared across browser tabs/sessions). Each write is
+    timestamped so get_results() can tell which copy is actually newest
+    instead of blindly trusting whichever one a given tab saw first.
     """
     payload = {
         "fer_result": fer_result,
         "ser_result": ser_result,
         "fusion": fusion,
         "source": source,
+        "saved_at": time.time(),
     }
     st.session_state["mer_fer_result"] = fer_result
     st.session_state["mer_ser_result"] = ser_result
     st.session_state["mer_fusion"] = fusion
     st.session_state["mer_source"] = source
+    st.session_state["mer_saved_at"] = payload["saved_at"]
     st.session_state["mer_has_result"] = True
     try:
         with open(_RESULTS_PATH, "wb") as f:
@@ -313,29 +317,51 @@ def store_results(fer_result, ser_result, fusion, source):
 def get_results():
     """Return the latest stored analysis, or None if nothing has run yet.
 
-    Prefers st.session_state; falls back to the on-disk copy so the report
-    pages keep working across reruns, page switches, and restarts.
+    Compares the timestamp in st.session_state against whatever is on disk
+    and returns whichever is actually newer — so a browser tab that cached an
+    older result (e.g. it loaded the report page before a later analysis ran,
+    possibly in a different tab) doesn't keep serving stale data forever.
     """
+    session_payload = None
     if st.session_state.get("mer_has_result"):
-        return {
+        session_payload = {
             "fer_result": st.session_state.get("mer_fer_result"),
             "ser_result": st.session_state.get("mer_ser_result"),
             "fusion": st.session_state.get("mer_fusion"),
             "source": st.session_state.get("mer_source", "—"),
+            "saved_at": st.session_state.get("mer_saved_at", 0),
         }
-    # Fall back to disk (e.g. after a restart that cleared session_state).
+
+    disk_payload = None
     try:
         with open(_RESULTS_PATH, "rb") as f:
-            payload = pickle.load(f)
-        # Re-hydrate session_state so subsequent reads on this page are fast.
-        st.session_state["mer_fer_result"] = payload["fer_result"]
-        st.session_state["mer_ser_result"] = payload["ser_result"]
-        st.session_state["mer_fusion"] = payload["fusion"]
-        st.session_state["mer_source"] = payload.get("source", "—")
-        st.session_state["mer_has_result"] = True
-        return payload
+            disk_payload = pickle.load(f)
     except Exception:
+        pass
+
+    # Pick whichever is newer. If disk wins, re-hydrate session_state so this
+    # tab is caught up and future reads in it are fast and correct.
+    best = session_payload
+    if disk_payload is not None:
+        disk_time = disk_payload.get("saved_at", 0)
+        session_time = session_payload.get("saved_at", 0) if session_payload else -1
+        if disk_time > session_time:
+            best = disk_payload
+            st.session_state["mer_fer_result"] = disk_payload["fer_result"]
+            st.session_state["mer_ser_result"] = disk_payload["ser_result"]
+            st.session_state["mer_fusion"] = disk_payload["fusion"]
+            st.session_state["mer_source"] = disk_payload.get("source", "—")
+            st.session_state["mer_saved_at"] = disk_time
+            st.session_state["mer_has_result"] = True
+
+    if best is None:
         return None
+    return {
+        "fer_result": best["fer_result"],
+        "ser_result": best["ser_result"],
+        "fusion": best["fusion"],
+        "source": best.get("source", "—"),
+    }
 
 
 def build_distribution_donut(probs_matrix, title):
