@@ -423,15 +423,14 @@ if ctx.state.playing:
     ser_chart_ph = st.empty()
 
     last_ser_run = [0.0]
+    last_save_time = [0.0]
+    SAVE_INTERVAL_SEC = 2.0   # persist periodically, not just at the end
     i = 0
     while ctx.state.playing:
         i += 1
-
-        # ---- live FER (heavy work: cv2 cascade + TF predict — main thread only)
         maybe_run_live_fer(frame_store, fer_store, fer_model, face_cascade)
-
-        # ---- live SER (heavy work, but on the main thread, not the callback)
         maybe_run_live_ser(audio_store, ser_store, ser_model, scaler, last_ser_run)
+
 
         # ---- live FER chart
         fer_res = fer_result_from_store(fer_store)
@@ -458,18 +457,23 @@ if ctx.state.playing:
         else:
             ser_chart_ph.info("Listening... first speech reading appears after ~2.5 s of audio.")
 
-        time.sleep(LOOP_SLEEP_SEC)
+                # NEW: periodically persist so a mid-stream abort doesn't lose it
+        now = time.time()
 
-    # Stream just stopped. Clear the live placeholders and fall through to the
-    # confirmation below in the SAME run. (We deliberately avoid st.rerun() here:
-    # rerunning re-enters the app.py navigation wrapper, and any hiccup in the
-    # nav-radio state there can crash the page. Falling through is safe because
-    # ctx.state.playing is now False.)
+        if now - last_save_time[0] >= SAVE_INTERVAL_SEC:
+            _fer_r = fer_result_from_store(fer_store)
+            _ser_r = ser_result_from_store(ser_store)
+            if _fer_r["probs"].shape[0] > 0 or _ser_r["probs"].shape[0] > 0:
+                _fusion = fuse_results(_fer_r, _ser_r, w_fer, w_ser)
+                store_results(_fer_r, _ser_r, _fusion, source="Live")
+            last_save_time[0] = now
+
+        time.sleep(LOOP_SLEEP_SEC)
+    # keep this as a final belt-and-suspenders save for the normal-exit path
     fer_metric_ph.empty()
     fer_chart_ph.empty()
     ser_chart_ph.empty()
-
-    # Build + persist the fused result so the report pages can display it.
+    
     _fer_result = fer_result_from_store(fer_store)
     _ser_result = ser_result_from_store(ser_store)
     if _fer_result["probs"].shape[0] > 0 or _ser_result["probs"].shape[0] > 0:
