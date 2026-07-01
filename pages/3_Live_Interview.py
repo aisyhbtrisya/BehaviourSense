@@ -473,7 +473,7 @@ if ctx.state.playing:
     fer_metric_ph.empty()
     fer_chart_ph.empty()
     ser_chart_ph.empty()
-    
+
     _fer_result = fer_result_from_store(fer_store)
     _ser_result = ser_result_from_store(ser_store)
     if _fer_result["probs"].shape[0] > 0 or _ser_result["probs"].shape[0] > 0:
@@ -496,24 +496,6 @@ if not ctx.state.playing and has_any_data:
         st.warning("No face was detected in any sampled frame — FER results will be empty (zero confidence).")
     if ser_result["probs"].shape[0] == 0:
         st.warning("No speech was analysed (no or insufficient audio) — SER results are empty.")
-
-    # Render the FULL results right here on the Live page, reusing the exact
-    # same functions the report pages use — so every element (metrics, donut,
-    # interactive timelines, radios) is identical, and the display does not
-    # depend on results surviving a page switch.
-    st.divider()
-    st.subheader("📊 Summary")
-    render_summary_report()
-
-    st.divider()
-    st.subheader("🔍 Detailed Report")
-    render_detailed_report()
-
-    st.divider()
-    st.caption(
-        "These same results are also available on the **📊 Summary Report** and "
-        "**🔍 Detailed Report** pages in the sidebar."
-    )
 
 elif not ctx.state.playing and not has_any_data:
     st.info("No session recorded yet. Start the stream above, let it run, then stop to see results.")
