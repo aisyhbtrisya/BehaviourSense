@@ -47,8 +47,9 @@ from utils.mer_core import (
     extract_ser_features,
     fuse_results,
     store_results,
+    render_summary_report,
+    render_detailed_report,
     build_probability_chart,
-    overall_dominant_emotion,
 )
 
 # set_page_config can only run once; guard it so the page works both standalone
@@ -492,15 +493,22 @@ if not ctx.state.playing and has_any_data:
     if ser_result["probs"].shape[0] == 0:
         st.warning("No speech was analysed (no or insufficient audio) — SER results are empty.")
 
-    fusion = st.session_state.get("mer_fusion")
-    if fusion is not None:
-        dom_label, dom_conf = overall_dominant_emotion(fusion["fused"])
-        st.metric("Final Predicted Emotion (Fused)", dom_label.capitalize(), f"{dom_conf:.1%} confidence")
+    # Render the FULL results right here on the Live page, reusing the exact
+    # same functions the report pages use — so every element (metrics, donut,
+    # interactive timelines, radios) is identical, and the display does not
+    # depend on results surviving a page switch.
+    st.divider()
+    st.subheader("📊 Summary")
+    render_summary_report()
 
-    st.info(
-        "Open **📊 Summary Report** for the dominant-emotion overview and the "
-        "distribution donut, or **🔍 Detailed Report** for the full interactive "
-        "emotion timelines — both are in the sidebar."
+    st.divider()
+    st.subheader("🔍 Detailed Report")
+    render_detailed_report()
+
+    st.divider()
+    st.caption(
+        "These same results are also available on the **📊 Summary Report** and "
+        "**🔍 Detailed Report** pages in the sidebar."
     )
 
 elif not ctx.state.playing and not has_any_data:
